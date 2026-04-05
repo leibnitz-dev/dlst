@@ -1,0 +1,473 @@
+############### experment1: nwp ####################
+
+import numpy as np
+import tensorflow as tf
+from datasets import load_dataset
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+dataset = load_dataset("wikitext", "wikitext-2-v1", split='train')
+type(dataset)
+
+raw_text = [line for line in dataset['text'] if len(line) > 100][:1000]
+
+
+print('sample dataset demonstrting few lines:\n',raw_text[:2])
+
+corpus = " ".join(raw_text).lower()
+vocab_size = 5000
+tokenizer = Tokenizer(num_words=vocab_size, oov_token="<OOV>")
+tokenizer.fit_on_texts([corpus])
+total_words = len(tokenizer.word_index) + 1
+
+# Convert the corpus into a list of integers
+token_list = tokenizer.texts_to_sequences([corpus])[0]
+
+X = []
+y = []
+
+for i in range(2, len(token_list)):
+    trigram = token_list[i-2:i+1]
+    X.append(trigram[:2])  # first 2 words as input
+    y.append(trigram[2])   # third word as target
+
+X = np.array(X)
+y = np.array(y)
+
+print(f"Total training sequences: {len(X)}")
+print(f"Sample Input (X): {X[0]} -> Output (y): {y[0]}")
+
+# ----------------------------
+# 2. Define LSTM model
+# ----------------------------
+model = tf.keras.Sequential([
+    # Embedding layer: vocab_size × 100-dimensional vectors
+    tf.keras.layers.Embedding(
+        input_dim=vocab_size,   # size of vocabulary
+        output_dim=100,         # embedding dimension
+        input_shape=(2,)        # sequence length = 2
+    ),
+
+    # LSTM layer: 150 units
+    tf.keras.layers.LSTM(150),
+
+    # Dense output: predict next word
+    tf.keras.layers.Dense(vocab_size, activation='softmax')
+])
+
+# Compile model
+model.compile(
+    loss='sparse_categorical_crossentropy',
+    optimizer='adam',
+    metrics=['accuracy']
+)
+
+# Buildthe model explicitly (optional but ensures summary shows parameters)
+model.build(input_shape=(None, 2))
+
+# Show summary
+model.summary()
+
+model.fit(X, y, epochs=10, batch_size=32)
+
+
+
+def predict_next_word(seed_text):
+    # 1. Clean and tokenize the input string
+    token_list = tokenizer.texts_to_sequences([seed_text.lower()])[0]
+
+    # 2. Ensure we only tak the last 2 words (trigram logic)
+    token_list = token_list[-2:]
+
+    # 3. Reshape for the model (Batch size of 1, Sequence length of 2)
+    token_list = np.array([token_list])
+
+    # 4. Get probabilities for the entire vocabulary
+    predictions = model.predict(token_list, verbose=0)
+
+    # 5. Get the index of the word with the highest probability
+    predicted_index = np.argmax(predictions, axis=-1)[0]
+
+
+    # 6. Map the integer back to the actual word
+    output_word = ""
+    for word, index in tokenizer.word_index.items():
+        if index == predicted_index:
+            output_word = word
+            break
+
+    return output_word
+
+
+import pickle
+
+# 1. Save the trained LSTM Model
+model.save('trigram_lstm_model.h5')
+print("Model saved to trigram_lstm_model.h5")
+
+# 2. Save the Tokenizer (The most important part for NLP!)
+with open('tokenizer.pkl', 'wb') as f:
+    pickle.dump(tokenizer, f)
+print("Tokenizer saved to tokenizer.pkl")
+
+loss, accuracy = model.evaluate(X, y)
+perplexity = np.exp(loss)
+print("Perplexity:", perplexity)
+
+import numpy as np
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+
+# 1. PRE-LOAD CONSTANTS (Do this once outside the function for speed)
+oov_idx = tokenizer.word_index.get(tokenizer.oov_token, 1)
+vocab_limit = model.output_shape[-1]  # Guards against IndexError
+vocab = tokenizer.word_index
+
+def predict_safe(seed, history):
+    # 2. INPUT SHIELD: Convert to IDs, skipping unknown or out-of-range words
+    ids = [vocab[w] for w in seed.lower().split() if w in vocab and vocab[w] < vocab_limit]
+
+    # 3. PADDING: Trigram model expects the last 2 words (maxlen=2)
+    padded = pad_sequences([ids], maxlen=2, padding='pre')
+
+    # 4. INFERENCE: Get the raw probability array from your 33% accuracy model
+    preds = model.predict(padded, verbose=0)[0]
+
+    # 5. OUTPUT SHIELD: Mask specific indices to 0 probability
+    # We block: Used words (history), Padding (0), and the Unknown token (oov_idx)
+    mask_targets = set(history + [0, oov_idx])
+    for i in mask_targets:
+        if i < vocab_limit:
+            preds[i] = 0.0
+
+    # 6. SELECTION: Pick the highest remaining probability
+    return np.argmax(preds)
+
+
+###### Experiment 1: Prediction code 
+
+import tensorflow as tf
+import pickle
+import numpy as np
+
+# Load trained model
+model = tf.keras.models.load_model('trigram_lstm_model.h5')
+
+# Load tokenizer
+with open('tokenizer.pkl', 'rb') as f:
+    tokenizer = pickle.load(f)
+
+print("Model and tokenizer loaded successfully!")
+
+def predict_next_word(seed_text):
+    # Convert input text → sequence
+    token_list = tokenizer.texts_to_sequences([seed_text.lower()])[0]
+
+    # Take last 2 words (trigram model)
+    token_list = token_list[-2:]
+
+    # Pad if needed
+    token_list = tf.keras.preprocessing.sequence.pad_sequences(
+        [token_list], maxlen=2, padding='pre'
+    )
+
+    # Predict
+    predictions = model.predict(token_list, verbose=0)
+    predicted_index = np.argmax(predictions, axis=-1)[0]
+
+    # Convert index → word
+    for word, index in tokenizer.word_index.items():
+        if index == predicted_index:
+            return word
+
+    return ""
+
+seed_text = "the university"
+next_words = 5
+
+for _ in range(next_words):
+    next_word = predict_next_word(seed_text)
+    seed_text += " " + next_word
+
+print("Generated Text:", seed_text)
+
+
+? model = tf.keras.models.load_model('trigram_lstm_model.keras') ?
+
+##### Experiment 2: sentiment classification#####
+
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.datasets import imdb
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Embedding, SimpleRNN, Dense, Dropout
+
+(x_train, y_train), (x_test, y_test) = imdb.load_data(num_words=5000)
+
+x_train = pad_sequences(x_train, maxlen=100)
+x_test = pad_sequences(x_test, maxlen=100)
+
+model = Sequential([
+    Embedding(5000, 32),
+    SimpleRNN(32, dropout=0.2),
+    Dense(1, activation='sigmoid')
+])
+
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+model.fit(x_train, y_train, epochs=3, batch_size=64, validation_split=0.2)
+
+def predict_sentiment(text):
+    word_index = imdb.get_word_index()
+    words = text.lower().split()
+    indices = [word_index.get(w, 2) + 3 for w in words]
+    padded = pad_sequences([indices], maxlen=100)
+
+    score = model.predict(padded)[0][0]
+    label = "Positive" if score > 0.5 else "Negative"
+
+    return label, f"{score:.4f}"
+
+# Example Usage:
+print(predict_sentiment("This movie was fantastic and I loved every minute"))
+print(predict_sentiment("The plot was boring and the acting was terrible"))
+
+model.save('imdb_rnn_model.keras')
+
+loaded_model = tf.keras.models.load_model('imdb_rnn_model.keras')
+print(predict_sentiment("This movie was a flop but the actor did well"))
+
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# 1. Basic Evaluation (Loss and Accuracy)
+loss, accuracy = model.evaluate(x_test, y_test, verbose=0)
+print(f"Test Accuracy: {acc)
+
+# 2. Detailed Class-wise Metrics
+y_pred_prob = model.predict(x_test)
+y_pred = (y_pred_prob > 0.5).astype("int32")
+
+print("\nDetailed Performance Report:")
+print(classification_report(y_test, y_pred, target_names=['Negative', 'Positive']))
+
+# 3. Visualizing Errors
+cm = confusion_matrix(y_test, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['Neg', 'Pos'], yticklabels=['Neg', 'Pos'])
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.show()
+
+
+####### Experiment 3: NER #######
+
+
+!pip install gliner
+from gliner import GLiNER
+
+# Try the base model which is highly stable and public
+model = GLiNER.from_pretrained("urchade/gliner_small-v2.1")
+
+text = "I met Mathandam and he said me about assignments and I got 1000 rupees"
+# Expanded labels for a "big" program
+labels = [
+    "person",   # People
+    "GPE",      # Cities/Countries
+    "org",      # Companies/Institutions
+    "date",     # Dates
+    "money",    # Currency
+    "product",  # Software/Hardware/Goods
+    "loc",      # Rivers/Mountains/Regions
+    "event",    # Elections/Meetings/Games
+    "language", # Python/English/Tamil
+    "quantity"  # Weights/Measurements/Distance
+]
+
+entities = model.predict_entities(text, labels)
+
+for entity in entities:
+    print(f"{entity['text']} => {entity['label']}")
+
+
+pip install spacy
+python -m spacy download en_core_web_sm
+
+import spacy
+
+# Load model
+nlp = spacy.load("en_core_web_sm")
+
+# Sample text
+text = "Elon Musk founded SpaceX in the United States."
+
+# Process text
+doc = nlp(text)
+
+# Print entities
+for ent in doc.ents:
+    print(ent.text, ent.label_)
+
+
+
+########## experiment 5: IR #############
+
+# experiment 5
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+documents = [
+    "Information retrieval is the process of obtaining relevant information",
+    "TF IDF stands for term frequency inverse document frequency",
+    "Python is widely used for data science and machine learning",
+    "Machine learning improves information retrieval systems"
+]
+
+vectorizer = TfidfVectorizer()
+tfidf_matrix = vectorizer.fit_transform(documents)
+
+query = input()
+query_vector = vectorizer.transform([query])
+
+similarity_scores = cosine_similarity(query_vector, tfidf_matrix)
+for i, score in enumerate(similarity_scores[0]):
+    print(f"Document {i+1} similarity score: {score:.4f}")
+
+most_relevant_index = similarity_scores.argmax()
+print("Most relevant document:")
+print(documents[most_relevant_index])
+
+
+########## Experiment 6 & 9 #############
+import faiss
+import pickle
+from sentence_transformers import SentenceTransformer, CrossEncoder
+from transformers import pipeline
+
+# Load models
+embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+qa_pipeline = pipeline(
+    "question-answering",
+    model="deepset/roberta-base-squad2"   # better than distilbert
+)
+
+# Load index + data
+index = faiss.read_index("faiss_index.index")
+data = pickle.load(open("passages.pkl", "rb"))
+
+
+def get_answer(query, top_k=5):
+    # Step 1: Encode query
+    query_vec = embed_model.encode([query])
+
+    # Step 2: Retrieve top passages
+    D, I = index.search(query_vec, top_k)
+    contexts = [data.iloc[i]["passage"] for i in I[0] if 0 <= i < len(data)]
+
+    if not contexts:
+        return "No relevant context found."
+
+    # Step 3: Re-rank
+    pairs = [[query, c] for c in contexts]
+    scores = reranker.predict(pairs)
+
+    ranked = sorted(zip(scores, contexts), reverse=True)
+    contexts = [c for _, c in ranked]
+
+    # Step 4: Combine top contexts (limit size)
+    combined_context = " ".join(contexts[:3])[:1000]
+
+    # Step 5: QA
+    result = qa_pipeline({
+        "question": query,
+        "context": combined_context
+    })
+
+    answer = result.get("answer", "").strip()
+    score = float(result.get("score", 0.0))
+
+    # Step 6: Validate answer
+    if score > 0.4 and len(answer) > 3:
+        return answer
+
+    # Fallback
+    return contexts[0]
+
+########### Experiment 7: ASR ###############
+
+from tensorflow.keras.models import load_model
+m = load_model("/content/digit_asr_model_train_test_split.keras")
+
+def recognize_audio_for_digit(file):
+    import librosa
+    import numpy as np
+
+    signal , sr = librosa.load(file, sr=8000)
+    mfcc = librosa.feature.mfcc(y=signal, sr=sr, n_mfcc=13).T
+
+    max_length =36
+    if mfcc.shape[0] < max_length:
+         mfcc = np.pad(mfcc, ((0, max_length- mfcc.shape[0]), (0,0)))
+    else:
+         mfcc = mfcc[:max_length]
+
+    mfcc = mfcc[np.newaxis, ..., np.newaxis]
+    pred = m.predict(mfcc)
+    return int(np.argmax(pred))
+
+recognize_audio_for_digit("/content/nine.wav")
+
+
+########## Experiment 8: concatenated Speech Synthesis ###############
+import os
+from gtts import gTTS
+from pydub import AudioSegment
+
+# Create folder for audio files
+if not os.path.exists("audio"):
+    os.makedirs("audio")
+
+# Common kiosk words
+words = [
+    "welcome", "please", "select", "enter", "ticket",
+    "payment", "successful", "cancel", "exit",
+    "thank you", "number", "confirm", "back",
+    "next", "invalid", "try again"
+]
+
+for word in words:
+
+    print("Generating:", word)
+
+    # Generate speech
+    tts = gTTS(text=word, lang="en")
+
+    # Temporary mp3 file
+    tts.save(f"audio/{word}.mp3")
+
+
+
+
+base_dir = os.path.dirname(__file__)
+audio_folder = os.path.join(base_dir, "audio")
+
+files = ["welcome.mp3", "please.mp3", "select.mp3", "confirm.mp3", "ticket.mp3"]
+files = [os.path.join(audio_folder, f) for f in files]
+
+with open("output.mp3", "wb") as outfile:
+    for fname in files:
+        with open(fname, "rb") as infile:
+            outfile.write(infile.read())
+
+
+
+
+
+
+
+
+
+
+
+
